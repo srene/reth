@@ -8,10 +8,8 @@ use std::{
 
 use alloy_primitives::Bytes;
 use derive_more::Display;
-use discv5::{
-    multiaddr::{Multiaddr, Protocol},
-    ListenConfig,
-};
+use discv5::ListenConfig;
+use multiaddr::{Multiaddr, Protocol};
 use reth_ethereum_forks::{EnrForkIdEntry, ForkId};
 use reth_network_peers::NodeRecord;
 use tracing::debug;

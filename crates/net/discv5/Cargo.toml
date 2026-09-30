@@ -22,6 +22,10 @@ reth-network-peers = { workspace = true, features = ["secp256k1"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 discv5 = { workspace = true, features = ["libp2p"] }
+# versions used by discv5 0.12, which no longer re-exports them
+discv5-enr = { package = "enr", version = "0.14" }
+libp2p-identity = { version = "0.3", features = ["secp256k1"] }
+multiaddr = "0.19"
 enr.workspace = true
 secp256k1.workspace = true
 

@@ -51,7 +51,7 @@ use metrics::{DiscoveredPeersMetrics, Discv5Metrics};
 
 /// Max kbucket index is 255.
 ///
-/// This is the max log2distance for 32 byte [`NodeId`](discv5::enr::NodeId) - 1. See <https://github.com/sigp/discv5/blob/e9e0d4f93ec35591832a9a8d937b4161127da87b/src/kbucket.rs#L586-L587>.
+/// This is the max log2distance for 32 byte [`NodeId`](discv5_enr::NodeId) - 1. See <https://github.com/sigp/discv5/blob/e9e0d4f93ec35591832a9a8d937b4161127da87b/src/kbucket.rs#L586-L587>.
 pub const MAX_KBUCKET_INDEX: usize = 255;
 
 /// Default lowest kbucket index to attempt filling, in periodic look up query to populate kbuckets.
@@ -160,7 +160,7 @@ impl Discv5 {
     }
 
     /// Returns the local [`Enr`] of the service.
-    pub fn local_enr(&self) -> Enr<discv5::enr::CombinedKey> {
+    pub fn local_enr(&self) -> discv5::Enr {
         self.discv5.local_enr()
     }
 
@@ -197,7 +197,7 @@ impl Discv5 {
         } = discv5_config;
 
         let EnrCombinedKeyWrapper(enr) = enr.into();
-        let sk = discv5::enr::CombinedKey::secp256k1_from_bytes(&mut sk.secret_bytes()).unwrap();
+        let sk = discv5_enr::CombinedKey::secp256k1_from_bytes(&mut sk.secret_bytes()).unwrap();
         let mut discv5 = match discv5::Discv5::new(enr, sk, discv5_config) {
             Ok(discv5) => discv5,
             Err(err) => return Err(Error::InitFailure(err)),
@@ -394,9 +394,9 @@ impl Discv5 {
 
     /// Returns the [`ForkId`] of the given [`Enr`](discv5::Enr) w.r.t. the local node's network
     /// stack, if field is set.
-    pub fn get_fork_id<K: discv5::enr::EnrKey>(
+    pub fn get_fork_id<K: discv5_enr::EnrKey>(
         &self,
-        enr: &discv5::enr::Enr<K>,
+        enr: &discv5_enr::Enr<K>,
     ) -> Result<ForkId, Error> {
         let Some(key) = self.fork_key else { return Err(Error::NetworkStackIdNotConfigured) };
         let fork_id = enr
@@ -469,7 +469,7 @@ pub fn build_local_enr(
     sk: &SecretKey,
     config: &Config,
 ) -> (Enr<SecretKey>, NodeRecord, Option<&'static [u8]>, IpMode) {
-    let mut builder = discv5::enr::Enr::builder();
+    let mut builder = Enr::builder();
 
     let Config {
         discv5_config,
@@ -609,7 +609,7 @@ pub fn spawn_populate_kbuckets_bg(
         // make many fast lookup queries at bootstrap, trying to fill kbuckets at furthest
         // log2distance from local node
         for i in (0..bootstrap_lookup_countdown).rev() {
-            let target = discv5::enr::NodeId::random();
+            let target = discv5_enr::NodeId::random();
 
             trace!(target: "net::discv5",
                 %target,
@@ -663,8 +663,8 @@ pub fn spawn_populate_kbuckets_bg(
 /// Gets the next lookup target, based on which bucket is currently being targeted.
 pub fn get_lookup_target(
     kbucket_index: usize,
-    local_node_id: discv5::enr::NodeId,
-) -> discv5::enr::NodeId {
+    local_node_id: discv5_enr::NodeId,
+) -> discv5_enr::NodeId {
     // init target
     let mut target = local_node_id.raw();
 
@@ -693,11 +693,11 @@ pub fn get_lookup_target(
 
 /// Runs a [`discv5::Discv5`] lookup query.
 pub async fn lookup(
-    target: discv5::enr::NodeId,
+    target: discv5_enr::NodeId,
     discv5: &discv5::Discv5,
     metrics: &DiscoveredPeersMetrics,
 ) {
-    metrics.set_total_sessions(discv5.metrics().active_sessions);
+    metrics.set_total_sessions(discv5::Discv5::metrics().active_sessions);
     metrics.set_total_kbucket_peers(
         discv5.with_kbuckets(|kbuckets| kbuckets.read().iter_ref().count()),
     );
@@ -996,7 +996,7 @@ mod test {
     fn select_lookup_target() {
         for bucket_index in 0..=MAX_KBUCKET_INDEX {
             let sk = CombinedKey::generate_secp256k1();
-            let local_node_id = discv5::enr::NodeId::from(sk.public());
+            let local_node_id = discv5_enr::NodeId::from(sk.public());
             let target = get_lookup_target(bucket_index, local_node_id);
 
             let local_node_id = sigp::Key::from(local_node_id);
