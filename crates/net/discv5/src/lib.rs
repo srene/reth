@@ -730,7 +730,7 @@ pub async fn lookup(
 mod test {
     #![allow(deprecated)]
     use super::*;
-    use ::enr::{CombinedKey, EnrKey};
+    use discv5_enr::{CombinedKey, EnrKey};
     use discv5::ListenConfig;
     use rand_08::thread_rng;
     use reth_chainspec::MAINNET;
@@ -745,7 +745,7 @@ mod test {
         Discv5 {
             discv5: Arc::new(
                 discv5::Discv5::new(
-                    Enr::empty(&sk).unwrap(),
+                    discv5::Enr::empty(&sk).unwrap(),
                     sk,
                     discv5::ConfigBuilder::new(DEFAULT_DISCOVERY_V5_LISTEN_CONFIG).build(),
                 )
@@ -890,7 +890,7 @@ mod test {
         const REMOTE_RLPX_PORT: u16 = 30303;
         let remote_socket = "104.28.44.25:9000".parse().unwrap();
         let remote_key = CombinedKey::generate_secp256k1();
-        let remote_enr = Enr::builder().tcp4(REMOTE_RLPX_PORT).build(&remote_key).unwrap();
+        let remote_enr = discv5::Enr::builder().tcp4(REMOTE_RLPX_PORT).build(&remote_key).unwrap();
 
         let discv5 = discv5_noop();
 
@@ -914,10 +914,7 @@ mod test {
     #[expect(unused)]
     mod sigp {
         use alloy_primitives::U256;
-        use enr::{
-            k256::sha2::digest::generic_array::{typenum::U32, GenericArray},
-            NodeId,
-        };
+        use discv5_enr::NodeId;
 
         /// A `Key` is a cryptographic hash, identifying both the nodes participating in
         /// the Kademlia DHT, as well as records stored in the DHT.
@@ -931,7 +928,7 @@ mod test {
         #[derive(Clone, Debug)]
         pub struct Key<T> {
             preimage: T,
-            hash: GenericArray<u8, U32>,
+            hash: [u8; 32],
         }
 
         impl<T> PartialEq for Key<T> {
@@ -950,7 +947,7 @@ mod test {
 
         impl<T> Key<T> {
             /// Construct a new `Key` by providing the raw 32 byte hash.
-            pub const fn new_raw(preimage: T, hash: GenericArray<u8, U32>) -> Self {
+            pub const fn new_raw(preimage: T, hash: [u8; 32]) -> Self {
                 Self { preimage, hash }
             }
 
@@ -983,7 +980,7 @@ mod test {
 
         impl From<NodeId> for Key<NodeId> {
             fn from(node_id: NodeId) -> Self {
-                Self { preimage: node_id, hash: *GenericArray::from_slice(&node_id.raw()) }
+                Self { preimage: node_id, hash: node_id.raw() }
             }
         }
 
@@ -1041,6 +1038,7 @@ mod test {
             )
             .build(&sk)
             .unwrap();
+        let EnrCombinedKeyWrapper(enr_with_opel) = enr_with_opel.into();
 
         let mut discv5 = discv5_noop();
         discv5.fork_key = Some(NetworkStackId::OPEL);
@@ -1054,12 +1052,13 @@ mod test {
             )
             .build(&sk)
             .unwrap();
+        let EnrCombinedKeyWrapper(enr_with_eth) = enr_with_eth.into();
 
         discv5.fork_key = Some(NetworkStackId::OPEL);
         assert_eq!(discv5.get_fork_id(&enr_with_eth).unwrap(), fork_id);
 
         // Test 3: ENR with neither OPEL nor ETH fork ID (should fail)
-        let enr_without_network_stack_id = Enr::empty(&sk).unwrap();
+        let EnrCombinedKeyWrapper(enr_without_network_stack_id) = Enr::empty(&sk).unwrap().into();
         discv5.fork_key = Some(NetworkStackId::OPEL);
         assert!(matches!(
             discv5.get_fork_id(&enr_without_network_stack_id),

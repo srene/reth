@@ -88,7 +88,7 @@ mod tests {
         let fork_id = MAINNET.hardfork_fork_id(EthereumHardfork::Frontier);
         fork_id.unwrap().encode(&mut buf);
 
-        let enr = Enr::builder()
+        let enr = discv5::Enr::builder()
             .ip6(IP.parse().unwrap())
             .udp6(UDP_PORT)
             .tcp6(TCP_PORT)

@@ -1,5 +1,6 @@
 //! Standalone bootnode command
 
+use alloy_primitives::{hex, B256};
 use clap::Parser;
 use reth_cli_util::{get_secret_key, load_secret_key::rng_secret_key};
 use reth_discv4::{DiscoveryUpdate, Discv4, Discv4Config};
@@ -14,6 +15,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 use tokio::{net::UdpSocket, select};
 use tokio_stream::StreamExt;
@@ -45,7 +47,14 @@ pub struct Command {
     /// Also run discv5, sharing the discv4 UDP port (`--addr`).
     #[arg(long)]
     pub v5: bool,
+
+    /// A `TopDisc` topic (32 bytes, hex) to advertise and search with discv5. Off by default.
+    #[arg(long, value_name = "TOPIC", requires = "v5")]
+    pub topic: Option<B256>,
 }
+
+/// Results after which a topic search ends before its timeout.
+const TOPIC_SEARCH_COUNT: usize = 100;
 
 impl Command {
     /// Execute the bootnode command.
@@ -95,6 +104,9 @@ impl Command {
             info!("Starting discv5 (shared port)");
             let (discv5, mut updates) = Discv5::start(&sk, discv5_config).await?;
             log_discv5_enr(&discv5);
+            if let Some(topic) = self.topic {
+                spawn_topic_loop(discv5.clone(), topic.0)?;
+            }
 
             // A dedicated task forwards discv4 frames to their ingress and logs discv5 sessions.
             let forwarder = tokio::spawn(async move {
@@ -106,6 +118,16 @@ impl Command {
                         Event::SessionEstablished(enr, _) => {
                             info!("(Discv5) new peer added, peer_id={:?}", enr.id())
                         }
+                        Event::TopicRegistered { topic, registrar } => info!(
+                            "(Discv5) topic registered, topic={} registrar={}",
+                            hex::encode(topic),
+                            hex::encode(registrar.raw())
+                        ),
+                        Event::TopicNodesFound { topic, nodes } => info!(
+                            "(Discv5) topic nodes found, topic={} ids={:?}",
+                            hex::encode(topic),
+                            node_ids(&nodes)
+                        ),
                         _ => {}
                     }
                 }
@@ -289,6 +311,36 @@ fn fixed_external_ip(nat: &NatResolver) -> eyre::Result<IpAddr> {
             eyre::bail!("--nat can only be repeated with extip:<IP> values");
         }
     }
+}
+
+fn node_ids(nodes: &[discv5::Enr]) -> Vec<String> {
+    nodes.iter().map(|enr| hex::encode(enr.node_id().raw())).collect()
+}
+
+/// Advertises `topic` and searches it in a loop; logs the results and the ads held.
+fn spawn_topic_loop(discv5: Discv5, topic: [u8; 32]) -> eyre::Result<()> {
+    discv5
+        .with_discv5(|discv5| discv5.register_topic(topic))
+        .map_err(|err| eyre::eyre!("register topic: {err:?}"))?;
+    info!("(Discv5) topic registration started, topic={}", hex::encode(topic));
+    tokio::spawn(async move {
+        loop {
+            let search =
+                discv5.with_discv5(|discv5| discv5.topic_search(topic, TOPIC_SEARCH_COUNT));
+            match search.await {
+                Ok(nodes) => info!(
+                    "(Discv5) topic search ended, results={} ids={:?}",
+                    nodes.len(),
+                    node_ids(&nodes)
+                ),
+                Err(err) => info!("(Discv5) topic search failed: {err:?}"),
+            }
+            let ads = discv5.with_discv5(|discv5| discv5.local_topic_nodes(topic));
+            info!("(Discv5) topic ads held, count={} ids={:?}", ads.len(), node_ids(&ads));
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+    Ok(())
 }
 
 fn log_discv5_enr(discv5: &Discv5) {
