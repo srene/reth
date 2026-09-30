@@ -994,6 +994,12 @@ pub struct DiscoveryArgs {
     #[arg(id = "discovery.v5.bootstrap.lookup-countdown", long = "discovery.v5.bootstrap.lookup-countdown", value_name = "DISCOVERY_V5_BOOTSTRAP_LOOKUP_COUNTDOWN",
         default_value_t = DefaultDiscoveryArgs::get_global().discv5_bootstrap_lookup_countdown)]
     pub discv5_bootstrap_lookup_countdown: u64,
+
+    /// A discv5 topic (32-byte hex id, or a name that is hashed) to register and search.
+    ///
+    /// When set, the topic search is the only source of discovered peers.
+    #[arg(id = "discovery.topic", long = "discovery.topic", value_name = "TOPIC", value_parser = parse_discovery_topic)]
+    pub discovery_topic: Option<B256>,
 }
 
 impl DiscoveryArgs {
@@ -1075,6 +1081,7 @@ impl DiscoveryArgs {
             .lookup_interval(*discv5_lookup_interval)
             .bootstrap_lookup_interval(*discv5_bootstrap_lookup_interval)
             .bootstrap_lookup_countdown(*discv5_bootstrap_lookup_countdown)
+            .topic(self.discovery_topic.map(|topic| topic.0))
     }
 
     /// Returns true if discv5 discovery should be configured.
@@ -1146,8 +1153,14 @@ impl Default for DiscoveryArgs {
             discv5_lookup_interval,
             discv5_bootstrap_lookup_interval,
             discv5_bootstrap_lookup_countdown,
+            discovery_topic: None,
         }
     }
+}
+
+/// Takes a 32-byte hex id as is and hashes any other name.
+fn parse_discovery_topic(s: &str) -> Result<B256, std::convert::Infallible> {
+    Ok(B256::from_str(s).unwrap_or_else(|_| alloy_primitives::keccak256(s.as_bytes())))
 }
 
 /// Parse a block number=hash pair or just a hash into `BlockNumHash`

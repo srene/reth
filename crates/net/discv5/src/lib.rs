@@ -17,7 +17,7 @@ use std::{
 };
 
 use ::enr::Enr;
-use alloy_primitives::bytes::Bytes;
+use alloy_primitives::{bytes::Bytes, hex};
 use enr::{discv4_id_to_discv5_id, EnrCombinedKeyWrapper};
 use futures::future::join_all;
 use itertools::Itertools;
@@ -26,7 +26,7 @@ use reth_ethereum_forks::{EnrForkIdEntry, ForkId};
 use reth_network_peers::{NodeRecord, PeerId};
 use secp256k1::SecretKey;
 use tokio::{sync::mpsc, task};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 pub mod config;
 pub mod enr;
@@ -61,6 +61,9 @@ pub const MAX_KBUCKET_INDEX: usize = 255;
 /// Default is 0th index.
 pub const DEFAULT_MIN_TARGET_KBUCKET_INDEX: usize = 0;
 
+/// Results after which a topic search ends before its timeout.
+const TOPIC_SEARCH_COUNT: usize = 100;
+
 /// Transparent wrapper around [`discv5::Discv5`].
 #[derive(Clone)]
 pub struct Discv5 {
@@ -79,6 +82,8 @@ pub struct Discv5 {
     // provide this via its [`local_enr`](discv5::Discv5::local_enr()). This is intended for
     // obtaining the port this service was launched at
     local_node_record: NodeRecord,
+    /// Topic that is registered and searched, if any.
+    topic: Option<[u8; 32]>,
 }
 
 impl Discv5 {
@@ -193,6 +198,7 @@ impl Discv5 {
             bootstrap_lookup_interval,
             bootstrap_lookup_countdown,
             discovered_peer_filter,
+            topic,
             ..
         } = discv5_config;
 
@@ -227,6 +233,10 @@ impl Discv5 {
             Arc::downgrade(&discv5),
         );
 
+        if let Some(topic) = topic {
+            spawn_topic_loop(&discv5, topic)?;
+        }
+
         Ok((
             Self {
                 discv5,
@@ -235,6 +245,7 @@ impl Discv5 {
                 discovered_peer_filter,
                 metrics,
                 local_node_record,
+                topic,
             },
             discv5_updates,
         ))
@@ -302,6 +313,65 @@ impl Discv5 {
             }
             _ => None
         }
+    }
+
+    /// Returns the topic that is registered and searched, if any.
+    pub const fn topic(&self) -> Option<[u8; 32]> {
+        self.topic
+    }
+
+    /// Processes an event in topic mode: only the results of the topic search are passed up.
+    pub fn on_topic_update(&self, update: discv5::Event) -> Vec<DiscoveredPeer> {
+        match update {
+            discv5::Event::TopicNodesFound { nodes, .. } => self.on_topic_nodes(nodes),
+            discv5::Event::TopicRegistered { registrar, .. } => {
+                info!(target: "net::discv5", registrar = hex::encode(registrar.raw()), "topic registered");
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Processes the advertisers found by a topic search. Keeps the peers of the local
+    /// network: a record that passes the filter and carries a fork id.
+    pub fn on_topic_nodes(&self, nodes: Vec<discv5::Enr>) -> Vec<DiscoveredPeer> {
+        let local_id = self.discv5.local_enr().node_id();
+        let mut peers = Vec::with_capacity(nodes.len());
+        for enr in nodes {
+            if enr.node_id() == local_id {
+                continue
+            }
+            let id = hex::encode(enr.node_id().raw());
+            let socket = match self.rlpx_ip_mode {
+                IpMode::Ip6 => enr.udp6_socket().map(SocketAddr::V6),
+                _ => enr.udp4_socket().map(SocketAddr::V4),
+            };
+            let Some(socket) = socket else {
+                info!(target: "net::discv5", id, reason = "no udp socket", "topic search peer ignored");
+                continue
+            };
+            if let FilterOutcome::Ignore { reason } = self.filter_discovered_peer(&enr) {
+                info!(target: "net::discv5", id, reason, "topic search peer ignored");
+                continue
+            }
+            let Ok(fork_id) = self.get_fork_id(&enr) else {
+                info!(target: "net::discv5", id, reason = "no fork id", "topic search peer ignored");
+                continue
+            };
+            let Ok(node_record) = self.try_into_reachable(&enr, socket) else {
+                info!(target: "net::discv5", id, reason = "key type", "topic search peer ignored");
+                continue
+            };
+            info!(target: "net::discv5",
+                id,
+                peer_id = %node_record.id,
+                addr = %node_record.tcp_addr(),
+                ?fork_id,
+                "topic search peer kept"
+            );
+            peers.push(DiscoveredPeer { node_record, fork_id: Some(fork_id) });
+        }
+        peers
     }
 
     /// Processes a discovered peer. Returns `true` if peer is added to
@@ -587,6 +657,30 @@ pub async fn bootstrap(
     Ok(())
 }
 
+/// Registers `topic` and searches it in a loop. The results reach the app as
+/// [`discv5::Event::TopicNodesFound`] events.
+fn spawn_topic_loop(discv5: &Arc<discv5::Discv5>, topic: [u8; 32]) -> Result<(), Error> {
+    discv5.register_topic(topic).map_err(Error::Discv5Error)?;
+    info!(target: "net::discv5", topic = hex::encode(topic), "topic registration started");
+    let discv5 = Arc::downgrade(discv5);
+    task::spawn(async move {
+        loop {
+            let Some(search) = discv5.upgrade().map(|d| d.topic_search(topic, TOPIC_SEARCH_COUNT))
+            else {
+                return
+            };
+            match search.await {
+                Ok(nodes) => {
+                    info!(target: "net::discv5", results = nodes.len(), "topic search ended")
+                }
+                Err(err) => debug!(target: "net::discv5", ?err, "topic search failed"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+    Ok(())
+}
+
 /// Backgrounds regular look up queries, in order to keep kbuckets populated.
 pub fn spawn_populate_kbuckets_bg(
     lookup_interval: u64,
@@ -754,6 +848,7 @@ mod test {
             rlpx_ip_mode: IpMode::Ip4,
             fork_key: None,
             discovered_peer_filter: MustNotIncludeKeys::default(),
+            topic: None,
             metrics: Discv5Metrics::default(),
             local_node_record: NodeRecord::new(
                 (Ipv4Addr::LOCALHOST, 30303).into(),

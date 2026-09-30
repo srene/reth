@@ -410,10 +410,14 @@ impl Discovery {
             while let Some(Poll::Ready(Some(update))) =
                 self.discv5_updates.as_mut().map(|updates| updates.poll_next_unpin(cx))
             {
-                if let Some(discv5) = self.discv5.as_mut() &&
-                    let Some(DiscoveredPeer { node_record, fork_id }) =
-                        discv5.on_discv5_update(update)
-                {
+                let Some(discv5) = self.discv5.as_ref() else { continue };
+                // With a topic, only the topic search results are passed up.
+                let peers = if discv5.topic().is_some() {
+                    discv5.on_topic_update(update)
+                } else {
+                    discv5.on_discv5_update(update).into_iter().collect()
+                };
+                for DiscoveredPeer { node_record, fork_id } in peers {
                     self.on_node_record_update(node_record, fork_id);
                 }
             }

@@ -92,6 +92,8 @@ pub struct ConfigBuilder {
     /// Custom filter rules to apply to a discovered peer in order to determine if it should be
     /// passed up to rlpx or dropped.
     discovered_peer_filter: Option<MustNotIncludeKeys>,
+    /// Topic to register and search. Off by default.
+    topic: Option<[u8; 32]>,
 }
 
 impl ConfigBuilder {
@@ -109,6 +111,7 @@ impl ConfigBuilder {
             bootstrap_lookup_interval,
             bootstrap_lookup_countdown,
             discovered_peer_filter,
+            topic,
         } = discv5_config;
 
         Self {
@@ -123,6 +126,7 @@ impl ConfigBuilder {
             bootstrap_lookup_interval: Some(bootstrap_lookup_interval),
             bootstrap_lookup_countdown: Some(bootstrap_lookup_countdown),
             discovered_peer_filter: Some(discovered_peer_filter),
+            topic,
         }
     }
 
@@ -246,6 +250,13 @@ impl ConfigBuilder {
         self
     }
 
+    /// Sets the topic to register and search. With a topic, only the topic search results are
+    /// passed up as discovered peers.
+    pub const fn topic(mut self, topic: Option<[u8; 32]>) -> Self {
+        self.topic = topic;
+        self
+    }
+
     /// Returns a new [`Config`].
     pub fn build(self) -> Config {
         let Self {
@@ -260,6 +271,7 @@ impl ConfigBuilder {
             bootstrap_lookup_interval,
             bootstrap_lookup_countdown,
             discovered_peer_filter,
+            topic,
         } = self;
 
         let mut discv5_config = discv5_config.unwrap_or_else(|| {
@@ -298,6 +310,7 @@ impl ConfigBuilder {
             bootstrap_lookup_interval,
             bootstrap_lookup_countdown,
             discovered_peer_filter,
+            topic,
         }
     }
 }
@@ -335,6 +348,8 @@ pub struct Config {
     /// Custom filter rules to apply to a discovered peer in order to determine if it should be
     /// passed up to rlpx or dropped.
     pub(super) discovered_peer_filter: MustNotIncludeKeys,
+    /// Topic to register and search.
+    pub(super) topic: Option<[u8; 32]>,
 }
 
 impl Config {
@@ -353,6 +368,7 @@ impl Config {
             bootstrap_lookup_interval: None,
             bootstrap_lookup_countdown: None,
             discovered_peer_filter: None,
+            topic: None,
         }
     }
 
